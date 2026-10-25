@@ -1,97 +1,119 @@
-import streamlit as st
-from langgraph_backend import workflow
-from langchain_core.messages import HumanMessage
-import uuid
-
-def  getUtility():
-    thread_id  = uuid.uuid4()
-    return str(thread_id)
-
-def reset_chat():
-    thread_id = getUtility()
-    st.session_state['thread_id']= thread_id
-    add_thread(thread_id)
-    st.session_state['messages'] = []
-
-def add_thread(thread_id):
-    if thread_id not in st.session_state['chat_thread']:
-        st.session_state['chat_thread'].append(thread_id)
-
-def load_conversation(thread_id):
-        config = {
-        'configurable': {
-            'thread_id': thread_id
-        }
-    }
-        return workflow.get_state(config=config).values.get('messages',[])
-
-if 'messages' not in st.session_state:
-    st.session_state['messages'] = []
-if 'thread_id' not in st.session_state:
-    st.session_state['thread_id'] = getUtility()
-if 'chat_thread' not in st.session_state:
-    st.session_state['chat_thread'] = []
-
-add_thread(st.session_state['thread_id'])
-
-
-
-st.sidebar.title('Langgraph chatbot')
-if st.sidebar.button('New button'):
-    reset_chat()
-
-
-
-
-st.sidebar.header('My conversation')
-
-for thread_id in st.session_state['chat_thread'][::-1]:
-
-   if st.sidebar.button(str(thread_id) , key=f'chat_{thread_id}'):
-       st.session_state['thread_id'] = thread_id
-       mess = load_conversation(thread_id)
-
-       temp_messeges = []
-
-       for m in mess:
-           if isinstance(m , HumanMessage):
-               role = 'user'
-           else:
-               role = 'assistant'
-           temp_messeges.append({'role': role , 'content': m.text})
-       st.session_state['messages'] = temp_messeges
-
-
-CONFIG = {
-    'configurable': {
-        'thread_id':st.session_state['thread_id']
-    }
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "4592d59f",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from langgraph.graph import StateGraph , START , END\n",
+    "from langchain_google_genai import ChatGoogleGenerativeAI\n",
+    "from typing import TypedDict , Annotated\n",
+    "from langchain_core.messages import BaseMessage , HumanMessage\n",
+    "from dotenv import load_dotenv\n",
+    "from langgraph.checkpoint.memory import MemorySaver\n",
+    "from langgraph.graph.message import add_messages\n",
+    "import streamlit as st\n",
+    "import uuid"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "d9598b8a",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "load_dotenv()\n",
+    "\n",
+    "model = ChatGoogleGenerativeAI(\n",
+    "    model=\"gemini-3.6-flash\"\n",
+    ")\n",
+    "\n",
+    "class ChatBot(TypedDict):\n",
+    "    messages: Annotated[list[BaseMessage], add_messages]\n",
+    "\n",
+    "\n",
+    "def chat_node(state: ChatBot) -> ChatBot:\n",
+    "    response = model.invoke(state[\"messages\"])\n",
+    "    return {\"messages\": [response]}\n",
+    "\n",
+    "\n",
+    "def get_config(thread_id: str):\n",
+    "    return {\"configurable\": {\"thread_id\": thread_id}}\n",
+    "\n",
+    "\n",
+    "checkpointer = MemorySaver()\n",
+    "\n",
+    "graph = StateGraph(ChatBot)\n",
+    "graph.add_node(\"chat_node\", chat_node)\n",
+    "graph.add_edge(START, \"chat_node\")\n",
+    "graph.add_edge(\"chat_node\", END)\n",
+    "workflow = graph.compile(checkpointer=checkpointer)\n",
+    "\n",
+    "\n",
+    "st.title(\"LangGraph Chatbot\")\n",
+    "\n",
+    "if \"thread_id\" not in st.session_state:\n",
+    "    st.session_state.thread_id = \"thread-1\"\n",
+    "\n",
+    "if \"ui_messages\" not in st.session_state:\n",
+    "    st.session_state.ui_messages = []\n",
+    "\n",
+    "for message in st.session_state.ui_messages:\n",
+    "    with st.chat_message(message[\"role\"]):\n",
+    "        st.markdown(message[\"content\"])\n",
+    "\n",
+    "prompt = st.chat_input(\"Type your message...\")\n",
+    "\n",
+    "if prompt:\n",
+    "    st.session_state.ui_messages.append({\"role\": \"user\", \"content\": prompt})\n",
+    "    with st.chat_message(\"user\"):\n",
+    "        st.markdown(prompt)\n",
+    "\n",
+    "    result = workflow.invoke(\n",
+    "        {\"messages\": [HumanMessage(content=prompt)]},\n",
+    "        config=get_config(st.session_state.thread_id),\n",
+    "    )\n",
+    "\n",
+    "    bot_reply = result[\"messages\"][-1].content\n",
+    "    st.session_state.ui_messages.append({\"role\": \"assistant\", \"content\": bot_reply})\n",
+    "\n",
+    "    with st.chat_message(\"assistant\"):\n",
+    "        st.markdown(bot_reply)\n",
+    "\n",
+    "    snapshot = workflow.get_state(config=get_config(st.session_state.thread_id))\n",
+    "    st.sidebar.write(\"Saved state:\")\n",
+    "    st.sidebar.write(snapshot.values)\n",
+    "\n",
+    "\n",
+    "if st.sidebar.button(\"Clear chat\"):\n",
+    "    st.session_state.ui_messages = []\n",
+    "    st.session_state.thread_id = f\"thread-{uuid.uuid4()}\"\n",
+    "    st.sidebar.write(\"New thread created.\")"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "myenv (3.13.15)",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.13.15"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
 }
-
-for m in st.session_state['messages']:
-    with st.chat_message(m['role']):
-        st.text(m['content'])
-
-
-
-user_input = st.chat_input("Type your message here...")
-
-if user_input:
-    st.session_state['messages'].append({
-        'role': 'user',
-        'content': user_input
-    })
-    with st.chat_message('user'):
-        st.text(user_input)
-    with st.chat_message('assistant'):
-        Ai_messege =  st.write_stream(
-            messege_chunk.text for messege_chunk , metadata in workflow.stream(
-                  {'messages' :[HumanMessage(content=user_input)]},
-                     config=CONFIG,
-                     stream_mode='messages'
-             )
-         )
-    st.session_state['messages'].append({
-            'role': 'assistant',
-            'content': Ai_messege
-        })
