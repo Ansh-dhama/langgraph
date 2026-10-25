@@ -3,8 +3,9 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from typing import TypedDict, Annotated
 from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph.message import add_messages
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from dotenv import load_dotenv
+import sqlite3
 
 load_dotenv()
 
@@ -30,8 +31,19 @@ graph.add_node('chat_node', chat_node)
 graph.add_edge(START, 'chat_node')
 graph.add_edge('chat_node', END)
 
-checkpointer = InMemorySaver()
+
+connection = sqlite3.connect(database ='chatbot.db', check_same_thread=False)
+checkpointer = SqliteSaver(connection)
+
 workflow = graph.compile(checkpointer=checkpointer)
+
+
+def retrive_all_thread():
+   all_thread = set()
+   for checkpoint in checkpointer.list(None):
+     all_thread.add(checkpoint.config['configurable']['thread_id'])
+   return list(all_thread)
+
 
 # for message_chunk, metadata in workflow.stream(
 #     {'messages': [HumanMessage(content='Written a essay on india capital in 100 words')]},
