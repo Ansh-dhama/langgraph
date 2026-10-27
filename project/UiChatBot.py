@@ -65,7 +65,11 @@ for thread_id in st.session_state['chat_thread'][::-1]:
 CONFIG = {
     'configurable': {
         'thread_id':st.session_state['thread_id']
+    },
+    'metadata':{
+        "thread_id":st.session_state["thread_id"]
     }
+ 
 }
 
 for m in st.session_state['messages']:
