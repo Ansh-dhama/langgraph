@@ -1,7 +1,7 @@
 import streamlit as st
-from langgraph_backend import workflow , retrive_all_thread
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 import uuid
+from langgraph_backend import workflow, retrive_all_thread, ingest_pdf
 
 def  getUtility():
     thread_id  = uuid.uuid4()
@@ -45,22 +45,53 @@ if st.sidebar.button('New button'):
 
 st.sidebar.header('My conversation')
 
-for thread_id in st.session_state['chat_thread'][::-1]:
 
-   if st.sidebar.button(str(thread_id) , key=f'chat_{thread_id}'):
-       st.session_state['thread_id'] = thread_id
-       mess = load_conversation(thread_id)
+st.sidebar.header("Upload PDF")
 
-       temp_messeges = []
+uploaded_file = st.sidebar.file_uploader(
+    "Choose a PDF file",
+    type=["pdf"]
+)
 
-       for m in mess:
-           if isinstance(m , HumanMessage):
-               role = 'user'
-           else:
-               role = 'assistant'
-           temp_messeges.append({'role': role , 'content': m.text})
-       st.session_state['messages'] = temp_messeges
+if uploaded_file is not None:
+    if st.sidebar.button("Process PDF"):
+        with st.spinner("Extracting text and creating embeddings..."):
+            result = ingest_pdf(
+                file_bytes=uploaded_file.getvalue(),
+                thread_id=st.session_state["thread_id"],
+                filename=uploaded_file.name,
+            )
 
+        if result["success"]:
+            st.sidebar.success(
+                f"PDF processed! Chunks: {result['chunks_created']}"
+            )
+        else:
+            st.sidebar.error(result["error"])
+
+
+for thread_id in st.session_state["chat_thread"][::-1]:
+    if st.sidebar.button(str(thread_id), key=f"chat_{thread_id}"):
+        st.session_state["thread_id"] = thread_id
+        mess = load_conversation(thread_id)
+
+        temp_messages = []
+
+        for m in mess:
+            if isinstance(m, HumanMessage):
+                role = "user"
+            elif isinstance(m, AIMessage):
+                role = "assistant"
+            else:
+                continue
+
+            temp_messages.append({
+                "role": role,
+                "content": m.content
+            })
+
+        st.session_state["messages"] = temp_messages
+        st.rerun()
 
 CONFIG = {
     'configurable': {
@@ -85,17 +116,92 @@ if user_input:
         'role': 'user',
         'content': user_input
     })
+
     with st.chat_message('user'):
-        st.text(user_input)
+        st.write(user_input)
+
+    final_response = ""
+
     with st.chat_message('assistant'):
-        Ai_messege =  st.write_stream(
-            messege_chunk.text for messege_chunk , metadata in workflow.stream(
-                  {'messages' :[HumanMessage(content=user_input)]},
-                     config=CONFIG,
-                     stream_mode='messages'
-             )
-         )
-    st.session_state['messages'].append({
-            'role': 'assistant',
-            'content': Ai_messege
-        }) 
+
+        with st.status("Agent processing...", expanded=True) as status:
+
+            try:
+                for event in workflow.stream(
+                    {'messages': [HumanMessage(content=user_input)]},
+                    config=CONFIG,
+                    stream_mode="updates"
+                ):
+
+                    for node_name, node_update in event.items():
+
+                        node_messages = node_update.get("messages", [])
+
+                        # 1. LLM node: identify the selected tool
+                        if node_name == "chat_node":
+
+                            for message in node_messages:
+
+                                if not isinstance(message, AIMessage):
+                                    continue
+
+                                if message.tool_calls:
+                                    for call in message.tool_calls:
+                                        status.write(
+                                            f"🧠 LLM selected tool: "
+                                            f"`{call['name']}`"
+                                        )
+
+                                        status.write(
+                                            f"Arguments: {call['args']}"
+                                        )
+
+                                else:
+                                    # Final LLM response
+                                    content = message.text
+
+                                    if isinstance(content, str):
+                                        final_response = content
+                                    else:
+                                        final_response = str(content)
+
+                        # 2. Tools node: show execution and result
+                        elif node_name == "tools":
+
+                            status.write(
+                                "🛠️ Tool Executor: Executing tool..."
+                            )
+
+                            for message in node_messages:
+
+                                if isinstance(message, ToolMessage):
+                                    status.write(
+                                        f"✅ Executed: `{message.name}`"
+                                    )
+
+                                    status.write(
+                                        f"Tool result: {message.content}"
+                                    )
+
+                status.update(
+                    label="Execution completed!",
+                    state="complete",
+                    expanded=False
+                )
+
+            except Exception as e:
+                status.update(
+                    label="Execution failed!",
+                    state="error",
+                    expanded=True
+                )
+                st.error(f"Error: {e}")
+
+        # 3. Display the final answer in the chat
+        if final_response:
+            st.markdown(final_response)
+
+            st.session_state['messages'].append({
+                'role': 'assistant',
+                'content': final_response
+            })
